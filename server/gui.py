@@ -17,8 +17,8 @@ from flask import Flask, request, jsonify
 import socket
 import subprocess
 import tempfile
-from session_window import SessionWindow
-from payload_generator import PayloadGenerator
+from .session_window import SessionWindow
+from .payload_generator import PayloadGenerator
 
 class ListenerThread(QThread):
     new_connection = pyqtSignal(str, str)

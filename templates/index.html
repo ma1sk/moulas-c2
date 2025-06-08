@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RAT Control Panel</title>
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
+    <style>
+        :root {
+            --primary-color: #00ff00;
+            --bg-dark: #0a0a0a;
+            --bg-darker: #050505;
+            --text-color: #00ff00;
+        }
+        
+        body {
+            background-color: var(--bg-dark);
+            color: var(--text-color);
+            font-family: 'Consolas', monospace;
+        }
+        
+        .terminal {
+            background-color: var(--bg-darker);
+            border: 1px solid var(--primary-color);
+            border-radius: 4px;
+        }
+        
+        .terminal-input {
+            background-color: transparent;
+            color: var(--text-color);
+            border: none;
+            outline: none;
+            width: 100%;
+        }
+        
+        .file-list {
+            background-color: var(--bg-darker);
+            border: 1px solid var(--primary-color);
+            border-radius: 4px;
+        }
+        
+        .file-item:hover {
+            background-color: rgba(0, 255, 0, 0.1);
+        }
+        
+        .status-indicator {
+            color: var(--primary-color);
+        }
+        
+        .status-indicator.offline {
+            color: #ff0000;
+        }
+    </style>
+</head>
+<body class="min-h-screen">
+    <div class="container mx-auto px-4 py-8">
+        <!-- Header -->
+        <header class="mb-8">
+            <h1 class="text-3xl font-bold mb-2">RAT Control Panel</h1>
+            <div class="flex space-x-4">
+                <div class="status-indicator">
+                    <i class="fas fa-circle"></i> Server Online
+                </div>
+                <div id="session-count">Active Sessions: 0</div>
+            </div>
+        </header>
+
+        <!-- Main Content -->
+        <div class="grid grid-cols-12 gap-4">
+            <!-- Sessions List -->
+            <div class="col-span-3">
+                <div class="bg-gray-900 p-4 rounded-lg">
+                    <h2 class="text-xl mb-4">Active Sessions</h2>
+                    <div id="sessions-list" class="space-y-2">
+                        <!-- Sessions will be populated here -->
+                    </div>
+                </div>
+            </div>
+
+            <!-- Main Panel -->
+            <div class="col-span-9">
+                <div class="grid grid-rows-2 gap-4 h-full">
+                    <!-- System Info -->
+                    <div class="bg-gray-900 p-4 rounded-lg">
+                        <h2 class="text-xl mb-4">System Information</h2>
+                        <div id="system-info" class="grid grid-cols-2 gap-4">
+                            <!-- System info will be populated here -->
+                        </div>
+                    </div>
+
+                    <!-- File Manager -->
+                    <div class="bg-gray-900 p-4 rounded-lg">
+                        <div class="flex justify-between items-center mb-4">
+                            <h2 class="text-xl">File Manager</h2>
+                            <div class="flex space-x-2">
+                                <button class="px-3 py-1 bg-green-900 text-green-400 rounded hover:bg-green-800">
+                                    <i class="fas fa-upload"></i> Upload
+                                </button>
+                                <button class="px-3 py-1 bg-green-900 text-green-400 rounded hover:bg-green-800">
+                                    <i class="fas fa-download"></i> Download
+                                </button>
+                            </div>
+                        </div>
+                        <div class="flex items-center mb-4">
+                            <input type="text" id="current-path" class="flex-1 bg-gray-800 text-green-400 px-3 py-2 rounded" value="/">
+                            <button class="ml-2 px-3 py-2 bg-green-900 text-green-400 rounded hover:bg-green-800">
+                                <i class="fas fa-sync"></i>
+                            </button>
+                        </div>
+                        <div id="file-list" class="file-list h-64 overflow-y-auto">
+                            <!-- File list will be populated here -->
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Terminal -->
+        <div class="mt-4">
+            <div class="terminal p-4">
+                <div id="terminal-output" class="h-32 overflow-y-auto mb-2">
+                    <!-- Terminal output will be populated here -->
+                </div>
+                <div class="flex items-center">
+                    <span class="text-green-400 mr-2">$</span>
+                    <input type="text" id="terminal-input" class="terminal-input" placeholder="Enter command...">
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Initialize Socket.IO
+        const socket = io();
+
+        // DOM Elements
+        const sessionsList = document.getElementById('sessions-list');
+        const systemInfo = document.getElementById('system-info');
+        const fileList = document.getElementById('file-list');
+        const terminalOutput = document.getElementById('terminal-output');
+        const terminalInput = document.getElementById('terminal-input');
+        const currentPath = document.getElementById('current-path');
+        const sessionCount = document.getElementById('session-count');
+
+        // Socket.IO Event Handlers
+        socket.on('connect', () => {
+            appendToTerminal('Connected to server');
+        });
+
+        socket.on('disconnect', () => {
+            appendToTerminal('Disconnected from server');
+        });
+
+        socket.on('session_created', (data) => {
+            updateSessionsList();
+            appendToTerminal(`New session connected: ${data.session_id}`);
+        });
+
+        socket.on('system_info_update', (data) => {
+            updateSystemInfo(data.info);
+        });
+
+        socket.on('file_list_update', (data) => {
+            updateFileList(data.files);
+        });
+
+        socket.on('command_output', (data) => {
+            appendToTerminal(data.output);
+        });
+
+        // UI Update Functions
+        function updateSessionsList() {
+            fetch('/api/sessions')
+                .then(response => response.json())
+                .then(sessions => {
+                    sessionsList.innerHTML = sessions.map(session => `
+                        <div class="p-2 hover:bg-gray-800 rounded cursor-pointer" onclick="selectSession('${session.id}')">
+                            <div class="flex items-center">
+                                <i class="fas fa-circle text-green-400 mr-2"></i>
+                                <div>
+                                    <div class="font-bold">${session.ip}</div>
+                                    <div class="text-sm text-gray-400">${session.os} - ${session.username}</div>
+                                </div>
+                            </div>
+                        </div>
+                    `).join('');
+                    sessionCount.textContent = `Active Sessions: ${sessions.length}`;
+                });
+        }
+
+        function updateSystemInfo(info) {
+            systemInfo.innerHTML = `
+                <div>
+                    <div class="text-sm text-gray-400">CPU Usage</div>
+                    <div class="text-lg">${info.cpu_percent || 0}%</div>
+                </div>
+                <div>
+                    <div class="text-sm text-gray-400">Memory Usage</div>
+                    <div class="text-lg">${info.memory_percent || 0}%</div>
+                </div>
+                <div>
+                    <div class="text-sm text-gray-400">Hostname</div>
+                    <div class="text-lg">${info.hostname || 'Unknown'}</div>
+                </div>
+                <div>
+                    <div class="text-sm text-gray-400">Username</div>
+                    <div class="text-lg">${info.username || 'Unknown'}</div>
+                </div>
+            `;
+        }
+
+        function updateFileList(files) {
+            fileList.innerHTML = files.map(file => `
+                <div class="file-item p-2 flex items-center cursor-pointer" onclick="handleFileClick('${file.name}')">
+                    <i class="fas ${file.type === 'directory' ? 'fa-folder' : 'fa-file'} text-green-400 mr-2"></i>
+                    <div>
+                        <div class="font-bold">${file.name}</div>
+                        <div class="text-sm text-gray-400">
+                            ${file.type === 'file' ? formatFileSize(file.size) : ''} - ${file.modified}
+                        </div>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        function appendToTerminal(text) {
+            const line = document.createElement('div');
+            line.textContent = text;
+            terminalOutput.appendChild(line);
+            terminalOutput.scrollTop = terminalOutput.scrollHeight;
+        }
+
+        // Utility Functions
+        function formatFileSize(bytes) {
+            if (bytes === 0) return '0 Bytes';
+            const k = 1024;
+            const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+        }
+
+        // Event Listeners
+        terminalInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                const command = terminalInput.value;
+                if (command.trim()) {
+                    socket.emit('command', { command });
+                    terminalInput.value = '';
+                }
+            }
+        });
+
+        // Initial load
+        updateSessionsList();
+    </script>
+</body>
+</html> 

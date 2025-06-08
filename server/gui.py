@@ -57,8 +57,17 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("C2 Framework")
         self.setMinimumSize(1200, 800)
         
-        # Initialize payload generator
-        self.payload_generator = PayloadGenerator()
+        # Initialize variables
+        self.active_listeners = {}
+        self.active_sessions = {}
+        self.session_windows = {}
+        
+        try:
+            # Initialize payload generator
+            self.payload_generator = PayloadGenerator()
+        except ImportError as e:
+            QMessageBox.critical(self, "Error", f"Failed to initialize: {str(e)}")
+            sys.exit(1)
         
         # Create main widget and layout
         main_widget = QWidget()
@@ -76,6 +85,9 @@ class MainWindow(QMainWindow):
         
         # Apply dark theme
         self.setStyleSheet(qdarkstyle.load_stylesheet())
+        
+        # Setup status bar
+        self.statusBar().showMessage("Ready")
         
     def create_listener_tab(self):
         listener_widget = QWidget()
@@ -122,6 +134,7 @@ class MainWindow(QMainWindow):
         config_layout = QFormLayout()
         
         self.payload_host = QLineEdit()
+        self.payload_host.setPlaceholderText("Enter C2 host address")
         self.payload_port = QSpinBox()
         self.payload_port.setRange(1, 65535)
         self.payload_port.setValue(8080)
@@ -131,6 +144,9 @@ class MainWindow(QMainWindow):
         
         self.obfuscation_level = QComboBox()
         self.obfuscation_level.addItems(["Low", "Medium", "High"])
+        
+        # Add validation
+        self.payload_host.textChanged.connect(self.validate_payload_config)
         
         config_layout.addRow("Host:", self.payload_host)
         config_layout.addRow("Port:", self.payload_port)
@@ -143,6 +159,8 @@ class MainWindow(QMainWindow):
         # Generate button
         generate_btn = QPushButton("Generate Payload")
         generate_btn.clicked.connect(self.generate_payload)
+        generate_btn.setEnabled(False)  # Disabled until valid config
+        self.generate_btn = generate_btn
         layout.addWidget(generate_btn)
         
         # Payload preview
@@ -159,6 +177,8 @@ class MainWindow(QMainWindow):
         # Save button
         save_btn = QPushButton("Save Payload")
         save_btn.clicked.connect(self.save_payload)
+        save_btn.setEnabled(False)  # Disabled until payload generated
+        self.save_btn = save_btn
         layout.addWidget(save_btn)
         
         self.tabs.addTab(payload_tab, "Payload Generator")
@@ -212,77 +232,132 @@ class MainWindow(QMainWindow):
             del self.active_listeners[port]
             self.update_listeners_table()
             
-    def handle_new_connection(self, client_id, client_info):
-        # Add to sessions table
-        row = self.sessions_table.rowCount()
-        self.sessions_table.insertRow(row)
-        self.sessions_table.setItem(row, 0, QTableWidgetItem(client_id))
-        self.sessions_table.setItem(row, 1, QTableWidgetItem(client_info.get('ip', 'Unknown')))
-        self.sessions_table.setItem(row, 2, QTableWidgetItem(datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
-        self.sessions_table.setItem(row, 3, QTableWidgetItem("Active"))
-        
-        # Store session info
-        self.active_sessions[client_id] = json.loads(client_info)
-        
-    def handle_connection_lost(self, client_id):
-        # Update session status
-        for row in range(self.sessions_table.rowCount()):
-            if self.sessions_table.item(row, 0).text() == client_id:
-                self.sessions_table.setItem(row, 3, QTableWidgetItem("Disconnected"))
-                break
-                
-    def generate_payload(self):
+    def validate_payload_config(self):
         host = self.payload_host.text()
-        port = self.payload_port.value()
-        
-        if not host:
-            QMessageBox.warning(self, "Error", "Please enter a host address")
-            return
+        is_valid = bool(host and host.strip())
+        self.generate_btn.setEnabled(is_valid)
+        if not is_valid:
+            self.statusBar().showMessage("Please enter a valid host address")
+        else:
+            self.statusBar().showMessage("Ready to generate payload")
             
-        # Generate payload
-        payload = self.payload_generator.generate_stealth_payload(host, port)
-        
-        # Set obfuscation level
-        if self.obfuscation_level.currentText() == "High":
-            # Add more obfuscation
-            payload = self.payload_generator.obfuscate_payload(payload)
-        
-        # Show preview
-        self.payload_preview.setText(payload)
-        
+    def generate_payload(self):
+        try:
+            host = self.payload_host.text()
+            port = self.payload_port.value()
+            
+            if not host:
+                QMessageBox.warning(self, "Error", "Please enter a host address")
+                return
+                
+            # Generate payload
+            self.statusBar().showMessage("Generating payload...")
+            payload = self.payload_generator.generate_stealth_payload(host, port)
+            
+            # Set obfuscation level
+            if self.obfuscation_level.currentText() == "High":
+                # Add more obfuscation
+                payload = self.payload_generator.obfuscate_payload(payload)
+            
+            # Show preview
+            self.payload_preview.setText(payload)
+            self.save_btn.setEnabled(True)
+            self.statusBar().showMessage("Payload generated successfully")
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to generate payload: {str(e)}")
+            self.statusBar().showMessage("Failed to generate payload")
+            
     def save_payload(self):
-        payload = self.payload_preview.toPlainText()
-        if not payload:
-            return
+        try:
+            payload = self.payload_preview.toPlainText()
+            if not payload:
+                return
+                
+            file_path, _ = QFileDialog.getSaveFileName(
+                self,
+                "Save Payload",
+                "",
+                "Python Files (*.py);;Executable Files (*.exe)"
+            )
             
-        file_path, _ = QFileDialog.getSaveFileName(
-            self,
-            "Save Payload",
-            "",
-            "Python Files (*.py);;Executable Files (*.exe)"
-        )
-        
-        if file_path:
-            if file_path.endswith('.exe'):
-                # Generate executable
-                if self.payload_generator.generate_exe(payload, file_path):
-                    QMessageBox.information(self, "Success", "Executable generated successfully")
+            if file_path:
+                self.statusBar().showMessage("Saving payload...")
+                
+                if file_path.endswith('.exe'):
+                    # Generate executable
+                    if self.payload_generator.generate_exe(payload, file_path):
+                        QMessageBox.information(self, "Success", "Executable generated successfully")
+                        self.statusBar().showMessage("Executable generated successfully")
+                    else:
+                        QMessageBox.warning(self, "Error", "Failed to generate executable")
+                        self.statusBar().showMessage("Failed to generate executable")
                 else:
-                    QMessageBox.warning(self, "Error", "Failed to generate executable")
-            else:
-                # Save Python script
-                with open(file_path, 'w') as f:
-                    f.write(payload)
-                QMessageBox.information(self, "Success", "Payload saved successfully")
-        
+                    # Save Python script
+                    with open(file_path, 'w') as f:
+                        f.write(payload)
+                    QMessageBox.information(self, "Success", "Payload saved successfully")
+                    self.statusBar().showMessage("Payload saved successfully")
+                    
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to save payload: {str(e)}")
+            self.statusBar().showMessage("Failed to save payload")
+            
+    def handle_new_connection(self, client_id, client_info):
+        try:
+            # Add to sessions table
+            row = self.sessions_table.rowCount()
+            self.sessions_table.insertRow(row)
+            self.sessions_table.setItem(row, 0, QTableWidgetItem(client_id))
+            self.sessions_table.setItem(row, 1, QTableWidgetItem(client_info.get('ip', 'Unknown')))
+            self.sessions_table.setItem(row, 2, QTableWidgetItem(datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+            self.sessions_table.setItem(row, 3, QTableWidgetItem("Active"))
+            
+            # Store session info
+            self.active_sessions[client_id] = json.loads(client_info)
+            self.statusBar().showMessage(f"New connection from {client_info.get('ip', 'Unknown')}")
+            
+        except Exception as e:
+            QMessageBox.warning(self, "Error", f"Failed to handle new connection: {str(e)}")
+            
+    def handle_connection_lost(self, client_id):
+        try:
+            # Update session status
+            for row in range(self.sessions_table.rowCount()):
+                if self.sessions_table.item(row, 0).text() == client_id:
+                    self.sessions_table.setItem(row, 3, QTableWidgetItem("Disconnected"))
+                    self.statusBar().showMessage(f"Connection lost: {client_id}")
+                    break
+                    
+        except Exception as e:
+            QMessageBox.warning(self, "Error", f"Failed to handle connection loss: {str(e)}")
+            
     def open_session(self, item):
-        client_id = item.text()
-        if client_id in self.active_sessions:
-            if client_id not in self.session_windows:
-                session_window = SessionWindow(client_id, self.active_sessions[client_id])
-                self.session_windows[client_id] = session_window
-            self.session_windows[client_id].show()
-            self.session_windows[client_id].raise_()
+        try:
+            client_id = item.text()
+            if client_id in self.active_sessions:
+                if client_id not in self.session_windows:
+                    session_window = SessionWindow(client_id, self.active_sessions[client_id])
+                    self.session_windows[client_id] = session_window
+                self.session_windows[client_id].show()
+                self.session_windows[client_id].raise_()
+                self.statusBar().showMessage(f"Opened session: {client_id}")
+                
+        except Exception as e:
+            QMessageBox.warning(self, "Error", f"Failed to open session: {str(e)}")
+            
+    def closeEvent(self, event):
+        try:
+            # Clean up resources
+            for listener in self.active_listeners.values():
+                listener.stop()
+            for window in self.session_windows.values():
+                window.close()
+            event.accept()
+            
+        except Exception as e:
+            QMessageBox.warning(self, "Error", f"Error during cleanup: {str(e)}")
+            event.accept()
 
 def main():
     app = QApplication(sys.argv)

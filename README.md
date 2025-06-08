@@ -1,15 +1,10 @@
 # C2 Framework
 
-A Command and Control framework for educational and security research purposes.
+A Command and Control framework with a modern GUI interface.
 
-## Project Structure
-- `server/` - C2 server implementation
-- `client/` - Client/agent implementation
-- `common/` - Shared utilities and protocols
-- `docs/` - Documentation
+## Setup
 
-## Setup Instructions
-1. Create a virtual environment:
+1. Create a virtual environment (recommended):
 ```bash
 python -m venv venv
 source venv/bin/activate  # On Windows: venv\Scripts\activate
@@ -20,20 +15,29 @@ source venv/bin/activate  # On Windows: venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-## Usage
+## Running the Application
+
 1. Start the C2 server:
 ```bash
-python server/main.py
+python main.py
 ```
 
-2. Deploy the client agent on target systems.
-
-## Security Notice
-This framework is intended for educational purposes and security research only. Always obtain proper authorization before using this tool on any system.
+2. The GUI will open with three main tabs:
+   - Listeners: Start/stop C2 listeners
+   - Payload Generator: Create and customize payloads
+   - Sessions: Manage active connections
 
 ## Features
-- Secure communication channel
-- Command execution
+
+- Modern GUI interface with dark theme
+- Payload generation with multiple obfuscation levels
+- Real-time session management
 - File transfer capabilities
-- Basic persistence mechanisms
-- Modular architecture 
+- System information gathering
+- Process management
+- Network connection monitoring
+- Multiple persistence methods
+
+## Security Notice
+
+This tool is for educational and authorized security testing purposes only. Always ensure you have proper authorization before using this tool on any system. 
